@@ -4,7 +4,7 @@ go 1.17
 
 require (
 	github.com/gin-gonic/gin v1.7.7
-	github.com/okex/exchain v1.2.1-0.20220426100211-8e2acd5fdf85
+	github.com/okex/exchain v1.2.1-0.20220427071536-ab28ba01667c
 	github.com/spf13/cobra v1.4.0
 	github.com/spf13/viper v1.10.1
 )
