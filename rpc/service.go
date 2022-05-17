@@ -83,9 +83,6 @@ func (s *Service) Start() {
 }
 
 func (s *Service) registerRoutes() {
-	s.router.GET("/", func(c *gin.Context) {
-		c.String(http.StatusOK, "Welcome Infura Service")
-	})
 	s.router.POST("/", func(c *gin.Context) {
 		s.ethRPC.ServeHTTP(c.Writer, c.Request)
 	})

@@ -1,25 +1,23 @@
 package eth
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 
-	"github.com/ethereum/go-ethereum/log"
-	"github.com/okex/exchain/x/evm/watcher"
-
-	"github.com/okex/exchain/x/infura"
-
-	"github.com/okex/exchain/x/infura/types"
-
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 
-	"github.com/okex/infura-service/mysql"
-	"github.com/okex/infura-service/redis"
-
+	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/filters"
+	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/rpc"
+	evmtypes "github.com/okex/exchain/x/evm/watcher"
+	"github.com/okex/exchain/x/infura"
+	"github.com/okex/exchain/x/infura/types"
+	"github.com/okex/infura-service/mysql"
+	"github.com/okex/infura-service/redis"
 )
 
 type PublicAPI struct {
@@ -34,7 +32,8 @@ func NewAPI(orm *mysql.Orm, redisCli *redis.Client) (*PublicAPI, error) {
 	}, nil
 }
 
-func (api *PublicAPI) GetTransactionReceipt(txHash common.Hash) (*watcher.TransactionReceipt, error) {
+// GetTransactionReceipt handles eth_getTransactionReceipt
+func (api *PublicAPI) GetTransactionReceipt(txHash common.Hash) (*evmtypes.TransactionReceipt, error) {
 	receipts, err := api.orm.GetTransactionReceipt(txHash.String())
 	if err != nil {
 		log.Info("ERROR", err)
@@ -44,55 +43,13 @@ func (api *PublicAPI) GetTransactionReceipt(txHash common.Hash) (*watcher.Transa
 		return nil, nil
 	}
 	receipt := receipts[0]
-	result := &watcher.TransactionReceipt{
-		Status:            hexutil.Uint64(receipt.Status),
-		CumulativeGasUsed: hexutil.Uint64(receipt.CumulativeGasUsed),
-		TransactionHash:   receipt.TransactionHash,
-		GasUsed:           hexutil.Uint64(receipt.GasUsed),
-		BlockHash:         receipt.BlockHash,
-		BlockNumber:       hexutil.Uint64(receipt.BlockNumber),
-		TransactionIndex:  hexutil.Uint64(receipt.TransactionIndex),
-		From:              receipt.From,
-		Logs:              []*ethtypes.Log{},
-	}
-
-	var contractAddr common.Address
-	if len(receipt.ContractAddress) > 0 {
-		contractAddr = common.HexToAddress(receipt.ContractAddress)
-		result.ContractAddress = &contractAddr
-	}
-	var to common.Address
-	if len(receipt.To) > 0 {
-		to = common.HexToAddress(receipt.To)
-		result.To = &to
-	}
-	result.LogsBloom = defaultLogsBloom
-
-	ethLogs := make([]*ethtypes.Log, 0) // 这里为了和以太坊eth_getLogs接口兼容，所以给用make初始化ehtLogs,为空时返回[],而不是null
-	for _, v := range receipt.Logs {
-		topics := make([]common.Hash, len(v.Topics))
-		for i, t := range v.Topics {
-			topics[i] = common.HexToHash(t.Topic)
-		}
-		ethLogs = append(ethLogs, &ethtypes.Log{
-			Address:     common.HexToAddress(v.Address),
-			Topics:      topics,
-			Data:        hexutil.MustDecode(v.Data),
-			BlockNumber: uint64(v.BlockNumber),
-			TxHash:      common.HexToHash(v.TransactionHash),
-			TxIndex:     uint(v.TransactionIndex),
-			BlockHash:   common.HexToHash(v.BlockHash),
-			Index:       uint(v.LogIndex),
-			Removed:     false,
-		})
-
-	}
-	result.Logs = ethLogs
+	result := convertTransactionReceipt(receipt)
 	return result, nil
 }
 
 // GetLogs returns logs matching the given argument that are stored within the state.
 // https://github.com/ethereum/wiki/wiki/JSON-RPC#eth_getLogs
+// GetLogs handles eth_getLogs
 func (api *PublicAPI) GetLogs(ctx context.Context, criteria filters.FilterCriteria) ([]*ethtypes.Log, error) {
 	var transactionLogs []types.TransactionLog
 	var err error
@@ -101,7 +58,6 @@ func (api *PublicAPI) GetLogs(ctx context.Context, criteria filters.FilterCriter
 	for i, addr := range criteria.Addresses {
 		addresses[i] = addr.String()
 	}
-
 	// 从mysql查询数据，分两种情况，一种是使用blockHash，另外一种是使用blockNum
 	if criteria.BlockHash != nil {
 		transactionLogs, err = api.orm.GetLogsByBlockHash(criteria.BlockHash.String(), addresses)
@@ -128,73 +84,8 @@ func (api *PublicAPI) GetLogs(ctx context.Context, criteria filters.FilterCriter
 			return nil, err
 		}
 	}
-	ethLogs := make([]*ethtypes.Log, 0) // 这里为了和以太坊eth_getLogs接口兼容，所以给用make初始化ehtLogs,为空时返回[],而不是null
-	for _, v := range transactionLogs {
-		topics := make([]common.Hash, len(v.Topics))
-		for i, t := range v.Topics {
-			topics[i] = common.HexToHash(t.Topic)
-		}
-		// match topics
-		if len(criteria.Topics) > 0 && !matchTopics(topics, criteria.Topics) {
-			continue
-		}
-		ethLogs = append(ethLogs, &ethtypes.Log{
-			Address:     common.HexToAddress(v.Address),
-			Topics:      topics,
-			Data:        hexutil.MustDecode(v.Data),
-			BlockNumber: uint64(v.BlockNumber),
-			TxHash:      common.HexToHash(v.TransactionHash),
-			TxIndex:     uint(v.TransactionIndex),
-			BlockHash:   common.HexToHash(v.BlockHash),
-			Index:       uint(v.LogIndex),
-			Removed:     false,
-		})
-
-	}
+	ethLogs := convertLogs(transactionLogs, criteria.Topics)
 	return ethLogs, nil
-}
-
-// The Topic list restricts matches to particular event topics. Each event has a list
-// of topics. Topics matches a prefix of that list. An empty element slice matches any
-// topic. Non-empty elements represent an alternative that matches any of the
-// contained topics.
-//
-// Examples:
-// {} or nil          matches any topic list
-// {{A}}              matches topic A in first position
-// {{}, {B}}          matches any topic in first position AND B in second position
-// {{A}, {B}}         matches topic A in first position AND B in second position
-// {{A, B}, {C, D}}   matches topic (A OR B) in first position AND (C OR D) in second position
-func matchTopics(topics []common.Hash, matches [][]common.Hash) bool {
-	matchCount := len(matches)
-	// 处理传入的参数，topic末位写入null的情况，比如传入：{{A}, nil, nil, nil}，这种情况只要第一个A满足条件，后面的nil忽略即可
-	for i := len(matches) - 1; i >= 0; i-- {
-		if len(matches[i]) > 0 {
-			break
-		}
-		matchCount--
-	}
-	// 要求的topic数量不匹配
-	if matchCount > len(topics) {
-		return false
-	}
-	// 验证topic
-	for i := 0; i < matchCount; i++ {
-		if len(matches[i]) == 0 {
-			continue
-		}
-		isMatch := false
-		for _, match := range matches[i] {
-			if bytes.Equal(topics[i].Bytes(), match.Bytes()) {
-				isMatch = true
-				break
-			}
-		}
-		if !isMatch {
-			return false
-		}
-	}
-	return true
 }
 
 func (api *PublicAPI) latestBlock() int64 {
@@ -208,4 +99,127 @@ func (api *PublicAPI) latestBlock() int64 {
 		return 0
 	}
 	return task.Height
+}
+
+func (api *PublicAPI) GetBlockByNumber(blockNum rpc.BlockNumber, fullTx bool) (*evmtypes.Block, error) {
+	height := int64(blockNum)
+	if height <= 0 {
+		height = api.latestBlock()
+	}
+	block, err := api.orm.GetBlockByNumber(height)
+	if err != nil {
+		return nil, nil
+	}
+	evmBlock := convertBlock(block, fullTx)
+	return evmBlock, nil
+}
+
+func (api *PublicAPI) GetBlockByHash(blockHash common.Hash, fullTx bool) (*evmtypes.Block, error) {
+	block, err := api.orm.GetBlockByHash(blockHash.String())
+	if err != nil {
+		return nil, err
+	}
+	evmBlock := convertBlock(block, fullTx)
+	return evmBlock, nil
+}
+
+func (api *PublicAPI) GetBlockTransactionCountByNumber(blockNum rpc.BlockNumber) *hexutil.Uint {
+	height := int64(blockNum)
+	if height <= 0 {
+		height = api.latestBlock()
+	}
+	block, err := api.orm.GetBlockByNumber(height)
+	if err != nil {
+		return nil
+	}
+	n := hexutil.Uint(len(block.Transactions))
+	return &n
+}
+
+func (api *PublicAPI) GetBlockTransactionCountByHash(blockHash common.Hash) *hexutil.Uint {
+	block, err := api.orm.GetBlockByHash(blockHash.String())
+	if err != nil {
+		return nil
+	}
+	n := hexutil.Uint(len(block.Transactions))
+	return &n
+}
+
+func (api *PublicAPI) GetTransactionByBlockHashAndIndex(blockHash common.Hash, idx hexutil.Uint) (*evmtypes.Transaction, error) {
+	block, err := api.orm.GetBlockByHash(blockHash.String())
+	if err != nil {
+		return nil, nil
+	}
+	var transaction *evmtypes.Transaction
+	for _, t := range block.Transactions {
+		if t.Index == uint64(idx) {
+			evmTransaction := convertTransaction(t, block.Number, block.Hash)
+			transaction = &evmTransaction
+		}
+	}
+	return transaction, nil
+}
+
+func (api *PublicAPI) GetTransactionByBlockNumberAndIndex(blockNum rpc.BlockNumber, idx hexutil.Uint) (*evmtypes.Transaction, error) {
+	height := int64(blockNum)
+	if height <= 0 {
+		height = api.latestBlock()
+	}
+	block, err := api.orm.GetBlockByNumber(height)
+	if err != nil {
+		return nil, nil
+	}
+	var transaction *evmtypes.Transaction
+	for _, t := range block.Transactions {
+		if t.Index == uint64(idx) {
+			evmTransaction := convertTransaction(t, block.Number, block.Hash)
+			transaction = &evmTransaction
+		}
+	}
+	return transaction, nil
+}
+
+func (api *PublicAPI) GetTransactionLogs(txHash common.Hash) ([]*ethtypes.Log, error) {
+	receipts, err := api.orm.GetTransactionReceipt(txHash.String())
+	if err != nil {
+		log.Info("ERROR", err)
+		return nil, err
+	}
+	if len(receipts) == 0 {
+		return nil, errors.New(fmt.Sprintf("tx (%s) not found", txHash.String()))
+	}
+	receipt := receipts[0]
+	result := convertLogs(receipt.Logs, nil)
+	if len(result) == 0 { // 为空时返回null,不返回[]
+		return nil, nil
+	}
+	return result, nil
+}
+
+func (api *PublicAPI) GetCode(address common.Address, blockNrOrHash rpc.BlockNumberOrHash) (hexutil.Bytes, error) {
+	blockNumber, err := api.convertToBlockNumber(blockNrOrHash)
+	if err != nil {
+		return nil, err
+	}
+	contractCode, err := api.orm.GetContractCode(address.String())
+	if err != nil || (blockNumber > 0 && contractCode.BlockNumber > blockNumber) {
+		return nil, nil // 没有查询结果时返回nil，不返回错误
+	}
+	return hexutil.MustDecode(contractCode.Code), nil
+}
+
+// 参考以太坊源码，返回error信息和以太坊保持一致
+func (api *PublicAPI) convertToBlockNumber(blockNrOrHash rpc.BlockNumberOrHash) (int64, error) {
+	if blockNr, ok := blockNrOrHash.Number(); ok {
+		return int64(blockNr), nil
+	}
+
+	if hash, ok := blockNrOrHash.Hash(); ok {
+		block, err := api.orm.GetBlockByHash(hash.String())
+		if err != nil {
+			return 0, errors.New("header for hash not found")
+		}
+		return block.Number, nil
+	}
+	return 0, errors.New("invalid arguments; neither block nor hash specified")
 }

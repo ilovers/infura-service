@@ -17,6 +17,7 @@ const (
 	flagMysqlUrl            = "mysql-url"
 	flagMysqlUser           = "mysql-user"
 	flagMysqlPass           = "mysql-pass"
+	flagMysqlDB             = "mysql-db"
 	flagRedisUrl            = "redis-url"
 	flagRedisAuth           = "redis-auth"
 	flagRedisDB             = "redis-db"
@@ -43,6 +44,7 @@ func bindStartFlags(cmd *cobra.Command) {
 	cmd.Flags().String(flagMysqlUrl, "127.0.0.1:3306", "Mysql url(host:port) of rpc service")
 	cmd.Flags().String(flagMysqlUser, "root", "Mysql user of rpc service")
 	cmd.Flags().String(flagMysqlPass, "root", "Mysql password of rpc service")
+	cmd.Flags().String(flagMysqlDB, "infura", "Mysql db name of rpc service")
 	cmd.Flags().String(flagRedisUrl, "127.0.0.1:6379", "Redis url(host:port) of infura rpc service")
 	cmd.Flags().String(flagRedisAuth, "", "Redis auth of rpc service")
 	cmd.Flags().Int(flagRedisDB, 0, "Redis db of rpc service")
@@ -68,6 +70,7 @@ func initConfig() *rpc.Config {
 		MysqlUrl:         viper.GetString(flagMysqlUrl),
 		MysqlUser:        viper.GetString(flagMysqlUser),
 		MysqlPass:        viper.GetString(flagMysqlPass),
+		MysqlDB:          viper.GetString(flagMysqlDB),
 		RedisUrl:         viper.GetString(flagRedisUrl),
 		RedisAuth:        viper.GetString(flagRedisAuth),
 		RedisDB:          viper.GetInt(flagRedisDB),

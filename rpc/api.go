@@ -18,7 +18,7 @@ const (
 
 // getAPIs returns the list of all APIs from the Ethereum namespaces
 func getAPIs(config *Config) []rpc.API {
-	orm, err := mysql.NewOrm(config.MysqlUrl, config.MysqlUser, config.MysqlPass)
+	orm, err := mysql.NewOrm(config.MysqlUrl, config.MysqlUser, config.MysqlPass, config.MysqlDB)
 	if err != nil {
 		log.Fatal(err)
 	}

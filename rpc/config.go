@@ -11,6 +11,7 @@ type Config struct {
 	MysqlUrl         string
 	MysqlUser        string
 	MysqlPass        string
+	MysqlDB          string
 	RedisUrl         string
 	RedisAuth        string
 	RedisDB          int
